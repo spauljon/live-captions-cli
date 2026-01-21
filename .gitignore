@@ -1,0 +1,54 @@
+# =========================
+# Swift Package Manager
+# =========================
+.build/
+.swiftpm/
+Packages/
+
+# =========================
+# Xcode
+# =========================
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# =========================
+# macOS
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# =========================
+# Swift / Debug artifacts
+# =========================
+*.dSYM
+*.dSYM.zip
+*.dSYM.tar.gz
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+tmp/
+temp/
+
+# =========================
+# Vim / Emacs / editors
+# =========================
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# =========================
+# Optional: local env files
+# =========================
+.env
