@@ -20,7 +20,7 @@ final class FinalOnlyProducer {
     private var silenceTimer: DispatchSourceTimer?
 
     // Tune these
-    private let silenceMillis: UInt64 = 1200           // 800–1500 is typical
+    private let silenceMillis: UInt64 = 1000           // 800–1500 is typical
     private let timerTickMillis: UInt64 = 200          // how often we check stability
 
     // Delta emission tracking (per session)
