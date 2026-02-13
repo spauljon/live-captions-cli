@@ -2,6 +2,43 @@ import Foundation
 import AVFoundation
 import Speech
 
+struct FinalDeltaTracker {
+    private(set) var emittedPrefixCount: Int = 0
+
+    mutating func nextDelta(fromFullText fullText: String) -> String? {
+        // If recognizer shrank/reset unexpectedly, reset prefix tracking
+        if emittedPrefixCount > fullText.count {
+            emittedPrefixCount = 0
+        }
+
+        let delta: String
+        if emittedPrefixCount == 0 {
+            delta = fullText
+        } else if emittedPrefixCount >= fullText.count {
+            delta = ""
+        } else {
+            let idx = fullText.index(fullText.startIndex, offsetBy: emittedPrefixCount)
+            delta = String(fullText[idx...])
+        }
+
+        emittedPrefixCount = fullText.count
+
+        let cleaned = delta.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        return cleaned
+    }
+}
+
+func makeNDJSONLine(_ msg: [String: Any]) -> Data? {
+    guard let payload = try? JSONSerialization.data(withJSONObject: msg, options: []) else {
+        return nil
+    }
+
+    var line = payload
+    line.append(Data("\n".utf8))
+    return line
+}
+
 // MARK: - Final-only producer: emits append-only FINAL segments (NDJSON on stdout)
 
 final class FinalOnlyProducer {
@@ -24,7 +61,7 @@ final class FinalOnlyProducer {
     private let timerTickMillis: UInt64 = 200          // how often we check stability
 
     // Delta emission tracking (per session)
-    private var emittedPrefixCount: Int = 0
+    private var deltaTracker = FinalDeltaTracker()
 
     // Stream identity
     private let streamId = UUID().uuidString
@@ -83,22 +120,31 @@ final class FinalOnlyProducer {
     }
 
     func stop() {
-        DispatchQueue.main.async {
-            self.silenceTimer?.cancel()
-            self.silenceTimer = nil
-
-            self.currentRequest = nil
-
-            self.request?.endAudio()
-            self.task?.cancel()
-            self.request = nil
-            self.task = nil
-
-            self.audioEngine.stop()
-            self.audioEngine.inputNode.removeTap(onBus: 0)
-
-            self.emit(kind: "status", detail: "stopped")
+        if Thread.isMainThread {
+            stopOnMain()
+            return
         }
+
+        DispatchQueue.main.sync {
+            self.stopOnMain()
+        }
+    }
+
+    private func stopOnMain() {
+        self.silenceTimer?.cancel()
+        self.silenceTimer = nil
+
+        self.currentRequest = nil
+
+        self.request?.endAudio()
+        self.task?.cancel()
+        self.request = nil
+        self.task = nil
+
+        self.audioEngine.stop()
+        self.audioEngine.inputNode.removeTap(onBus: 0)
+
+        self.emit(kind: "status", detail: "stopped")
     }
 
     // MARK: - Session management (2-method approach)
@@ -136,14 +182,14 @@ final class FinalOnlyProducer {
         // Reset per-session state
         latestFullText = ""
         lastChangeTime = .now()
-        emittedPrefixCount = 0
+        deltaTracker = FinalDeltaTracker()
 
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         req.taskHint = .dictation
         if #available(macOS 12.0, *) { req.addsPunctuation = true }
         if #available(macOS 13.0, *), recognizer.supportsOnDeviceRecognition {
-            req.requiresOnDeviceRecognition = false
+            req.requiresOnDeviceRecognition = true
         }
 
         request = req
@@ -236,26 +282,7 @@ final class FinalOnlyProducer {
     // MARK: - Emit: delta + NDJSON
 
     private func emitFinalDelta(fromFullText fullText: String) {
-        // If recognizer shrank/reset unexpectedly, reset prefix tracking
-        if emittedPrefixCount > fullText.count {
-            emittedPrefixCount = 0
-        }
-
-        let delta: String
-        if emittedPrefixCount == 0 {
-            delta = fullText
-        } else if emittedPrefixCount >= fullText.count {
-            delta = ""
-        } else {
-            let idx = fullText.index(fullText.startIndex, offsetBy: emittedPrefixCount)
-            delta = String(fullText[idx...])
-        }
-
-        emittedPrefixCount = fullText.count
-
-        let cleaned = delta.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return }
-
+        guard let cleaned = deltaTracker.nextDelta(fromFullText: fullText) else { return }
         emit(kind: "final", text: cleaned)
     }
 
@@ -273,15 +300,17 @@ final class FinalOnlyProducer {
         if let detail { msg["detail"] = detail }
         for (k, v) in extra { msg[k] = v }
 
-        if let data = try? JSONSerialization.data(withJSONObject: msg, options: []) {
-            FileHandle.standardOutput.write(data)
-            FileHandle.standardOutput.write(Data("\n".utf8))
-            fflush(stdout)
-        }
+        writeNDJSON(msg)
     }
 }
 
 extension FinalOnlyProducer: @unchecked Sendable {}
+
+private func writeNDJSON(_ msg: [String: Any]) {
+    guard let line = makeNDJSONLine(msg) else { return }
+    FileHandle.standardOutput.write(line)
+    fflush(stdout)
+}
 
 // MARK: - Permissions
 
@@ -314,18 +343,14 @@ struct Main {
         DispatchQueue.main.async {
             requestPermissions { ok in
                 guard ok else {
-                    FileHandle.standardOutput.write(
-                        Data("{\"v\":1,\"kind\":\"error\",\"detail\":\"permissions_denied\"}\n".utf8)
-                    )
+                    writeNDJSON(["v": 1, "kind": "error", "detail": "permissions_denied"])
                     exit(1)
                 }
 
                 do {
                     try producer.start()
                 } catch {
-                    FileHandle.standardOutput.write(
-                        Data("{\"v\":1,\"kind\":\"error\",\"detail\":\"\(error.localizedDescription)\"}\n".utf8)
-                    )
+                    writeNDJSON(["v": 1, "kind": "error", "detail": error.localizedDescription])
                     exit(1)
                 }
             }

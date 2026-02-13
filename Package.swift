@@ -14,6 +14,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "live-captions-cli"
+        ),
+        .testTarget(
+            name: "live-captions-cliTests",
+            dependencies: ["live-captions-cli"]
         )
     ]
 )
